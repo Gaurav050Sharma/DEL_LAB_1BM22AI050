@@ -1,0 +1,126 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.model_selection import train_test_split
+from sklearn.datasets import make_regression
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Generate a multitask dataset
+np.random.seed(42)
+X, y_reg = make_regression(n_samples=1000, n_features=10, noise=0.1)
+y_clf = (y_reg > y_reg.mean()).astype(int)
+
+# Preprocess data
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
+
+X_train, X_val, y_reg_train, y_reg_val, y_clf_train, y_clf_val = train_test_split(
+    X, y_reg, y_clf, test_size=0.2, random_state=42
+)
+
+X_train = torch.tensor(X_train, dtype=torch.float32)
+y_reg_train = torch.tensor(y_reg_train, dtype=torch.float32).view(-1, 1)
+y_clf_train = torch.tensor(y_clf_train, dtype=torch.float32).view(-1, 1)
+
+X_val = torch.tensor(X_val, dtype=torch.float32)
+y_reg_val = torch.tensor(y_reg_val, dtype=torch.float32).view(-1, 1)
+y_clf_val = torch.tensor(y_clf_val, dtype=torch.float32).view(-1, 1)
+
+# Define the multitask neural network
+class MultitaskNN(nn.Module):
+    def __init__(self, input_size, hidden_size, dropout_rate=0.2):
+        super(MultitaskNN, self).__init__()
+        self.shared_fc = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        self.regressor = nn.Linear(hidden_size, 1)  # Task 1: Regression
+        self.classifier = nn.Sequential(            # Task 2: Classification
+            nn.Linear(hidden_size, 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        shared = self.shared_fc(x)
+        reg_out = self.regressor(shared)
+        clf_out = self.classifier(shared)
+        return reg_out, clf_out
+
+# Initialize the model, optimizer, and loss functions
+input_size = X_train.shape[1]
+hidden_size = 64
+dropout_rate = 0.2
+model = MultitaskNN(input_size, hidden_size, dropout_rate)
+
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+criterion_reg = nn.MSELoss()  # Regression loss
+criterion_clf = nn.BCELoss()  # Classification loss
+
+# Training loop with early stopping
+epochs = 100
+patience = 5
+best_val_loss = float('inf')
+patience_counter = 0
+
+train_losses = []
+val_losses = []
+
+gradient_clip_value = 1.0
+
+for epoch in range(epochs):
+    model.train()
+    optimizer.zero_grad()
+    
+    # Forward pass
+    reg_out, clf_out = model(X_train)
+    loss_reg = criterion_reg(reg_out, y_reg_train)
+    loss_clf = criterion_clf(clf_out, y_clf_train)
+    train_loss = loss_reg + loss_clf  # Combine losses for multitask learning
+    
+    # Backward pass
+    train_loss.backward()
+    
+    # Gradient clipping
+    nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value)
+    
+    optimizer.step()
+    
+    # Validation
+    model.eval()
+    with torch.no_grad():
+        val_reg_out, val_clf_out = model(X_val)
+        val_loss_reg = criterion_reg(val_reg_out, y_reg_val)
+        val_loss_clf = criterion_clf(val_clf_out, y_clf_val)
+        val_loss = val_loss_reg + val_loss_clf
+    
+    train_losses.append(train_loss.item())
+    val_losses.append(val_loss.item())
+    
+    # Early stopping
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        patience_counter = 0
+    else:
+        patience_counter += 1
+        if patience_counter >= patience:
+            print(f"Early stopping at epoch {epoch + 1}")
+            break
+    
+    print(
+        f"Epoch {epoch + 1}/{epochs}, "
+        f"Train Loss: {train_loss.item():.4f}, "
+        f"Val Loss: {val_loss.item():.4f}"
+    )
+
+# Plot training and validation losses
+plt.plot(train_losses, label='Training Loss')
+plt.plot(val_losses, label='Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.title('Training and Validation Losses')
+plt.grid()
+plt.show()
